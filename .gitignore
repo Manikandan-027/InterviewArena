@@ -1,0 +1,10 @@
+node_modules/
+.next/
+out/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+.vercel
+interview_arena_2500_questions.sql

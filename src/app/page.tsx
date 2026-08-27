@@ -9,7 +9,7 @@ import type { CategoryKey, NotebookItem, Stats } from "@/lib/types";
 import Dashboard from "@/components/Dashboard";
 import Practice from "@/components/Practice";
 import History from "@/components/History";
-import EmailCenter from "@/components/SmsCenter";
+import EmailCenter from "@/components/EmailCenter";
 import RegisterModal from "@/components/RegisterModal";
 import { AnimatePresence as AP, Icon, ToastView } from "@/components/ui";
 

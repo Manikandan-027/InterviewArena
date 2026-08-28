@@ -9,17 +9,106 @@ import { isCategory, shuffle } from "@/server/api-utils";
 export const dynamic = "force-dynamic";
 
 /**
- * Serves a random round for a category.
+ * Remove generated numbering from prompts.
+ *
+ * Examples:
+ * "Choose the grammatically correct sentence 384."
+ * "Choose the grammatically correct sentence 4."
+ *
+ * Both become:
+ * "choose the grammatically correct sentence"
+ */
+function normalizePrompt(prompt: string): string {
+  return prompt
+    .trim()
+    .toLowerCase()
+    .replace(/\s+\d+\.?\s*$/, "")
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Creates a content-based signature.
+ *
+ * We intentionally use content instead of the database ID.
+ * This prevents different IDs containing the same logical
+ * question from appearing in the same round.
+ *
+ * passageKey is included for Reading/Listening so questions
+ * belonging to different passages remain separate.
+ */
+function questionSignature(
+  question: (typeof questionBank.$inferSelect),
+): string {
+  const normalizedPrompt = normalizePrompt(question.prompt);
+
+  let normalizedOptions = question.options;
+
+  try {
+    const parsed = JSON.parse(question.options) as string[];
+
+    normalizedOptions = JSON.stringify(
+      parsed.map((option) =>
+        option.trim().toLowerCase().replace(/\s+/g, " "),
+      ),
+    );
+  } catch {
+    normalizedOptions = question.options
+      .trim()
+      .toLowerCase();
+  }
+
+  return JSON.stringify({
+    category: question.category,
+    passageKey: question.passageKey ?? "",
+    prompt: normalizedPrompt,
+    options: normalizedOptions,
+    correctIndex: question.correctIndex,
+  });
+}
+
+/**
+ * Convert question rows into a unique content pool.
+ *
+ * If several database records are actually copies of the
+ * same logical question, only one record is kept.
+ */
+function uniqueByContent(
+  questions: (typeof questionBank.$inferSelect)[],
+): (typeof questionBank.$inferSelect)[] {
+  const seen = new Set<string>();
+  const result: (typeof questionBank.$inferSelect)[] = [];
+
+  for (const question of questions) {
+    if (question.id == null) {
+      continue;
+    }
+
+    const signature = questionSignature(question);
+
+    if (seen.has(signature)) {
+      continue;
+    }
+
+    seen.add(signature);
+    result.push(question);
+  }
+
+  return result;
+}
+
+/**
+ * Serves a random round.
+ *
+ * Grammar / Verbal / Logical:
+ * - 5 questions
+ * - no duplicate logical question in the same round
+ * - avoids recently served logical duplicates
  *
  * Reading / Listening:
- * - 3 questions per round
- * - Uses one passage per round
- * - Avoids recently used passages
- * - Avoids recently used questions
- *
- * Other sections:
- * - 5 questions per round
- * - Avoids recently used questions
+ * - 3 questions
+ * - one passage per round
+ * - avoids recently used passages/questions
+ * - no duplicate logical question in the same round
  */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -32,12 +121,17 @@ export async function GET(req: Request) {
     );
   }
 
-  const isPassage = category === "reading" || category === "listening";
+  const isPassage =
+    category === "reading" ||
+    category === "listening";
+
   const count = isPassage ? 3 : 5;
 
   try {
     await ensureSeeded();
-  } catch {
+  } catch (error) {
+    console.error("Question seed error:", error);
+
     return NextResponse.json(
       {
         error:
@@ -48,9 +142,9 @@ export async function GET(req: Request) {
   }
 
   try {
-    // ---------------------------------------------------------
-    // Get complete question bank for this category
-    // ---------------------------------------------------------
+    // =========================================================
+    // LOAD BANK
+    // =========================================================
 
     const bank = await db
       .select()
@@ -66,13 +160,13 @@ export async function GET(req: Request) {
       );
     }
 
-    // ---------------------------------------------------------
-    // Get recently used question IDs
-    // ---------------------------------------------------------
+    // =========================================================
+    // RECENTLY USED QUESTIONS
+    // =========================================================
 
     const recentLimit = isPassage
-      ? 30
-      : Math.max(count * 6, 30);
+      ? 60
+      : Math.max(count * 10, 50);
 
     const recentRows = await db
       .select({
@@ -87,19 +181,44 @@ export async function GET(req: Request) {
       recentRows.map((row) => row.questionId),
     );
 
-    // ---------------------------------------------------------
-    // PASSAGE BASED SECTIONS
-    // Reading / Listening
-    // ---------------------------------------------------------
+    // =========================================================
+    // CONVERT RECENT IDS INTO CONTENT SIGNATURES
+    // =========================================================
+    //
+    // This is the important part for your current database.
+    //
+    // Example:
+    //
+    // ID 4 and ID 384 have different IDs,
+    // but identical question content.
+    //
+    // We treat them as one logical question.
+    // =========================================================
+
+    const recentQuestions = bank.filter(
+      (question) =>
+        question.id != null &&
+        recentQuestionIds.has(question.id),
+    );
+
+    const recentSignatures = new Set<string>(
+      recentQuestions.map(questionSignature),
+    );
+
+    // =========================================================
+    // PASSAGE SECTIONS
+    // READING / LISTENING
+    // =========================================================
 
     if (isPassage) {
       const passages = [
         ...new Set(
           bank
-            .map((q) => q.passageKey)
+            .map((question) => question.passageKey)
             .filter(
               (key): key is string =>
-                typeof key === "string" && key.length > 0,
+                typeof key === "string" &&
+                key.length > 0,
             ),
         ),
       ];
@@ -107,102 +226,189 @@ export async function GET(req: Request) {
       if (passages.length === 0) {
         return NextResponse.json(
           {
-            error: `No passages found for ${category}.`,
+            error:
+              `No passages found for ${category}.`,
           },
           { status: 503 },
         );
       }
 
-      // Find passages that contain enough questions.
-      const validPassages = passages.filter((passageKey) => {
-        const questions = bank.filter(
-          (q) => q.passageKey === passageKey,
-        );
+      // -------------------------------------------------------
+      // A passage must contain enough unique questions
+      // -------------------------------------------------------
 
-        return questions.length >= count;
-      });
+      const validPassages = passages.filter(
+        (passageKey) => {
+          const passageQuestions = uniqueByContent(
+            bank.filter(
+              (question) =>
+                question.passageKey === passageKey,
+            ),
+          );
+
+          return passageQuestions.length >= count;
+        },
+      );
 
       if (validPassages.length === 0) {
         return NextResponse.json(
           {
-            error: `Not enough questions in any ${category} passage.`,
+            error:
+              `Not enough unique questions in any ${category} passage.`,
           },
           { status: 503 },
         );
       }
 
       // -------------------------------------------------------
-      // Calculate how many questions from each passage were
-      // recently used.
+      // Calculate recent usage for every passage
       // -------------------------------------------------------
 
-      const passageUsageCount = new Map<string, number>();
+      const passageScores = new Map<
+        string,
+        number
+      >();
 
       for (const passageKey of validPassages) {
-        const usedCount = bank.filter(
-          (q) =>
-            q.passageKey === passageKey &&
-            q.id != null &&
-            recentQuestionIds.has(q.id),
-        ).length;
+        const passageQuestions =
+          uniqueByContent(
+            bank.filter(
+              (question) =>
+                question.passageKey === passageKey,
+            ),
+          );
 
-        passageUsageCount.set(passageKey, usedCount);
+        let recentlyUsed = 0;
+
+        for (const question of passageQuestions) {
+          const signature =
+            questionSignature(question);
+
+          if (
+            (question.id != null &&
+              recentQuestionIds.has(question.id)) ||
+            recentSignatures.has(signature)
+          ) {
+            recentlyUsed += 1;
+          }
+        }
+
+        passageScores.set(
+          passageKey,
+          recentlyUsed,
+        );
       }
 
-      // Prefer passages with ZERO recently used questions.
-      let freshPassages = validPassages.filter(
-        (key) => (passageUsageCount.get(key) ?? 0) === 0,
-      );
+      // -------------------------------------------------------
+      // Prefer passages containing ZERO recently used questions
+      // -------------------------------------------------------
 
-      // If all passages have been used recently, choose the
-      // passages with the fewest recently used questions.
-      if (freshPassages.length === 0) {
+      let candidatePassages =
+        validPassages.filter(
+          (passageKey) =>
+            (passageScores.get(passageKey) ?? 0) ===
+            0,
+        );
+
+      // -------------------------------------------------------
+      // If every passage has been used recently,
+      // choose the least-used passages.
+      // -------------------------------------------------------
+
+      if (candidatePassages.length === 0) {
         const minimumUsage = Math.min(
           ...validPassages.map(
-            (key) => passageUsageCount.get(key) ?? 0,
+            (passageKey) =>
+              passageScores.get(passageKey) ?? 0,
           ),
         );
 
-        freshPassages = validPassages.filter(
-          (key) =>
-            (passageUsageCount.get(key) ?? 0) === minimumUsage,
+        candidatePassages =
+          validPassages.filter(
+            (passageKey) =>
+              (passageScores.get(passageKey) ?? 0) ===
+              minimumUsage,
+          );
+      }
+
+      if (candidatePassages.length === 0) {
+        return NextResponse.json(
+          {
+            error:
+              "Could not find an available passage.",
+          },
+          { status: 503 },
         );
       }
 
-      // Randomly select one passage.
+      // Randomly select the passage.
       const selectedPassageKey =
-        shuffle(freshPassages)[0];
+        shuffle(candidatePassages)[0];
 
       // -------------------------------------------------------
-      // Select questions from that passage.
-      // Prefer questions that were NOT recently used.
+      // QUESTIONS IN SELECTED PASSAGE
       // -------------------------------------------------------
 
-      const passageQuestions = bank.filter(
-        (q) => q.passageKey === selectedPassageKey,
-      );
+      const passageQuestions =
+        uniqueByContent(
+          bank.filter(
+            (question) =>
+              question.passageKey ===
+              selectedPassageKey,
+          ),
+        );
 
-      const freshQuestions = passageQuestions.filter(
-        (q) =>
-          q.id != null &&
-          !recentQuestionIds.has(q.id),
-      );
+      // Prefer completely fresh logical questions.
+      const freshQuestions =
+        passageQuestions.filter((question) => {
+          if (question.id == null) {
+            return false;
+          }
 
-      let chosenQuestions =
-        freshQuestions.length >= count
-          ? shuffle(freshQuestions).slice(0, count)
-          : shuffle(passageQuestions).slice(0, count);
+          const signature =
+            questionSignature(question);
 
-      // Extra safety: never return duplicate IDs.
-      const unique = new Map<number, (typeof bank)[number]>();
+          return (
+            !recentQuestionIds.has(question.id) &&
+            !recentSignatures.has(signature)
+          );
+        });
 
-      for (const question of chosenQuestions) {
-        if (question.id != null) {
-          unique.set(question.id, question);
-        }
+      let chosenQuestions: (
+        typeof bank[number]
+      )[] = [];
+
+      if (freshQuestions.length >= count) {
+        chosenQuestions = shuffle(
+          freshQuestions,
+        ).slice(0, count);
+      } else {
+        // We may need to reuse something because the
+        // current passage does not have enough untouched
+        // questions.
+        chosenQuestions = shuffle(
+          passageQuestions,
+        ).slice(0, count);
       }
 
-      chosenQuestions = [...unique.values()];
+      // -------------------------------------------------------
+      // FINAL CONTENT-LEVEL DEDUPLICATION
+      // -------------------------------------------------------
+
+      const seen = new Set<string>();
+
+      chosenQuestions =
+        chosenQuestions.filter((question) => {
+          const signature =
+            questionSignature(question);
+
+          if (seen.has(signature)) {
+            return false;
+          }
+
+          seen.add(signature);
+          return true;
+        });
 
       if (chosenQuestions.length < count) {
         return NextResponse.json(
@@ -214,95 +420,157 @@ export async function GET(req: Request) {
         );
       }
 
-      // Record usage.
+      // -------------------------------------------------------
+      // RECORD USAGE
+      // -------------------------------------------------------
+
       await db.insert(questionUsage).values(
-        chosenQuestions.map((q) => ({
-          questionId: q.id!,
+        chosenQuestions.map((question) => ({
+          questionId: question.id!,
           category,
         })),
       );
 
       return NextResponse.json({
         category,
-        questions: chosenQuestions.map((q) => ({
-          id: q.id,
-          category: q.category,
-          difficulty: q.difficulty,
-          prompt: q.prompt,
-          options: JSON.parse(q.options) as string[],
-          timeLimit: q.timeLimit,
-          passageKey: q.passageKey,
-          passageText: q.passageText,
-          correctIndex: q.correctIndex,
-          explanation: q.explanation,
-        })),
+
+        questions: chosenQuestions.map(
+          (question) => ({
+            id: question.id,
+            category: question.category,
+            difficulty: question.difficulty,
+            prompt: question.prompt,
+            options: JSON.parse(
+              question.options,
+            ) as string[],
+            timeLimit: question.timeLimit,
+            passageKey: question.passageKey,
+            passageText: question.passageText,
+            correctIndex:
+              question.correctIndex,
+            explanation:
+              question.explanation,
+          }),
+        ),
       });
     }
 
-    // ---------------------------------------------------------
+    // =========================================================
     // NORMAL SECTIONS
-    // Grammar / Verbal / Logical
-    // ---------------------------------------------------------
+    // GRAMMAR / VERBAL / LOGICAL
+    // =========================================================
 
-    const freshQuestions = bank.filter(
-      (q) =>
-        q.id != null &&
-        !recentQuestionIds.has(q.id),
-    );
+    // First remove duplicate logical questions from the bank.
+    const contentUniqueBank =
+      uniqueByContent(bank);
 
-    // Prefer fresh questions.
-    // If the entire bank has recently been used, reset the
-    // selection pool automatically.
+    // Prefer questions that are both:
+    // 1. not recently used by ID
+    // 2. not recently used by content
+    const freshQuestions =
+      contentUniqueBank.filter((question) => {
+        if (question.id == null) {
+          return false;
+        }
+
+        const signature =
+          questionSignature(question);
+
+        return (
+          !recentQuestionIds.has(question.id) &&
+          !recentSignatures.has(signature)
+        );
+      });
+
+    // If enough fresh logical questions exist,
+    // use only those.
+    //
+    // Otherwise use the content-unique bank.
     const pool =
       freshQuestions.length >= count
         ? freshQuestions
-        : bank;
+        : contentUniqueBank;
 
-    const chosenQuestions = shuffle(pool).slice(0, count);
+    const shuffledPool = shuffle(pool);
 
-    // Extra safety against duplicate question IDs.
-    const uniqueQuestions = [
-      ...new Map(
-        chosenQuestions
-          .filter((q) => q.id != null)
-          .map((q) => [q.id!, q]),
-      ).values(),
-    ].slice(0, count);
+    const chosenQuestions: (
+      typeof bank[number]
+    )[] = [];
 
-    if (uniqueQuestions.length < count) {
+    const seen = new Set<string>();
+
+    for (const question of shuffledPool) {
+      if (question.id == null) {
+        continue;
+      }
+
+      const signature =
+        questionSignature(question);
+
+      if (seen.has(signature)) {
+        continue;
+      }
+
+      seen.add(signature);
+      chosenQuestions.push(question);
+
+      if (chosenQuestions.length === count) {
+        break;
+      }
+    }
+
+    if (chosenQuestions.length < count) {
       return NextResponse.json(
         {
           error:
-            "Could not create a unique question round.",
+            `Not enough unique questions available for ${category}.`,
         },
         { status: 503 },
       );
     }
 
+    // =========================================================
+    // RECORD USAGE
+    // =========================================================
+
     await db.insert(questionUsage).values(
-      uniqueQuestions.map((q) => ({
-        questionId: q.id!,
+      chosenQuestions.map((question) => ({
+        questionId: question.id!,
         category,
       })),
     );
 
+    // =========================================================
+    // RESPONSE
+    // =========================================================
+
     return NextResponse.json({
       category,
-      questions: uniqueQuestions.map((q) => ({
-        id: q.id,
-        category: q.category,
-        difficulty: q.difficulty,
-        prompt: q.prompt,
-        options: JSON.parse(q.options) as string[],
-        timeLimit: q.timeLimit,
-        passageKey: q.passageKey,
-        passageText: q.passageText,
-        correctIndex: q.correctIndex,
-        explanation: q.explanation,
-      })),
+
+      questions: chosenQuestions.map(
+        (question) => ({
+          id: question.id,
+          category: question.category,
+          difficulty: question.difficulty,
+          prompt: question.prompt,
+          options: JSON.parse(
+            question.options,
+          ) as string[],
+          timeLimit: question.timeLimit,
+          passageKey: question.passageKey,
+          passageText: question.passageText,
+          correctIndex:
+            question.correctIndex,
+          explanation:
+            question.explanation,
+        }),
+      ),
     });
   } catch (error) {
-    console.error("Question API error:", error);
+    console.error(
+      "Question API error:",
+      error,
+    );
 
     return NextResponse.json(
       {

@@ -9,7 +9,12 @@ import {
 } from "drizzle-orm/pg-core";
 
 /**
- * Email addresses registered for email alerts.
+ * Registered InterviewArena users.
+ *
+ * passwordHash is nullable only because existing databases
+ * may contain old email-only registrations.
+ *
+ * New accounts always have a passwordHash.
  */
 export const registrations = pgTable("registrations", {
   id: serial("id").primaryKey(),
@@ -17,6 +22,8 @@ export const registrations = pgTable("registrations", {
   name: text("name").notNull(),
 
   email: text("email").notNull().unique(),
+
+  passwordHash: text("password_hash"),
 
   createdAt: timestamp("created_at", {
     withTimezone: true,
@@ -26,7 +33,44 @@ export const registrations = pgTable("registrations", {
 });
 
 /**
+ * Secure server-side authentication sessions.
+ *
+ * The browser only receives the random session ID
+ * through an HttpOnly cookie.
+ *
+ * userId is controlled by the server.
+ */
+export const authSessions = pgTable(
+  "auth_sessions",
+  {
+    id: text("id").primaryKey(),
+
+    userId: text("user_id").notNull(),
+
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+    }).notNull(),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    index("auth_session_user_idx").on(
+      t.userId,
+    ),
+
+    index("auth_session_exp_idx").on(
+      t.expiresAt,
+    ),
+  ],
+);
+
+/**
  * Full question bank.
+ *
  * Options are stored as a JSON array of strings.
  */
 export const questionBank = pgTable(
@@ -48,7 +92,9 @@ export const questionBank = pgTable(
 
     options: text("options").notNull(),
 
-    correctIndex: integer("correct_index").notNull(),
+    correctIndex: integer(
+      "correct_index",
+    ).notNull(),
 
     explanation: text("explanation")
       .notNull()
@@ -59,20 +105,23 @@ export const questionBank = pgTable(
       .default(40),
   },
   (t) => [
-    index("qb_category_idx").on(t.category),
+    index("qb_category_idx").on(
+      t.category,
+    ),
   ],
 );
 
 /**
- * Every question that has been served,
- * so new rounds never repeat recent ones.
+ * Every question that has been served.
  */
 export const questionUsage = pgTable(
   "question_usage",
   {
     id: serial("id").primaryKey(),
 
-    questionId: integer("question_id").notNull(),
+    questionId: integer(
+      "question_id",
+    ).notNull(),
 
     category: text("category").notNull(),
 
@@ -124,33 +173,43 @@ export const attempts = pgTable(
 
     rating: text("rating"),
 
-    completedAt: timestamp("completed_at", {
-      withTimezone: true,
-    })
+    completedAt: timestamp(
+      "completed_at",
+      {
+        withTimezone: true,
+      },
+    )
       .defaultNow()
       .notNull(),
   },
   (t) => [
-    index("att_user_idx").on(t.userId),
+    index("att_user_idx").on(
+      t.userId,
+    ),
 
-    index("att_cat_idx").on(t.category),
+    index("att_cat_idx").on(
+      t.category,
+    ),
   ],
 );
 
 /**
- * Per-question answer log with a snapshot
- * of the question for the Missed notebook.
+ * Per-question answer log.
  */
 export const answers = pgTable(
   "answers",
   {
     id: serial("id").primaryKey(),
 
-    attemptId: integer("attempt_id").notNull(),
+    attemptId: integer(
+      "attempt_id",
+    ).notNull(),
 
     userId: text("user_id"),
 
-    questionId: integer("question_id").notNull(),
+    questionId: integer(
+      "question_id",
+    ).notNull(),
 
     category: text("category").notNull(),
 
@@ -158,27 +217,40 @@ export const answers = pgTable(
 
     options: text("options").notNull(),
 
-    correctIndex: integer("correct_index").notNull(),
+    correctIndex: integer(
+      "correct_index",
+    ).notNull(),
 
     // -1 = skipped / timed out
-    userAnswer: integer("user_answer").notNull(),
+    userAnswer: integer(
+      "user_answer",
+    ).notNull(),
 
-    isCorrect: boolean("is_correct")
+    isCorrect: boolean(
+      "is_correct",
+    )
       .notNull()
       .default(false),
 
-    timeTakenMs: integer("time_taken_ms")
+    timeTakenMs: integer(
+      "time_taken_ms",
+    )
       .notNull()
       .default(0),
 
-    createdAt: timestamp("created_at", {
-      withTimezone: true,
-    })
+    createdAt: timestamp(
+      "created_at",
+      {
+        withTimezone: true,
+      },
+    )
       .defaultNow()
       .notNull(),
   },
   (t) => [
-    index("ans_user_idx").on(t.userId),
+    index("ans_user_idx").on(
+      t.userId,
+    ),
 
     index("ans_wrong_idx").on(
       t.userId,
@@ -189,72 +261,40 @@ export const answers = pgTable(
 
 /**
  * Email notifications.
- *
- * Every successful SMTP email is logged here.
  */
 export const notifications = pgTable(
   "notifications",
   {
     id: serial("id").primaryKey(),
 
-    /**
-     * Recipient email address.
-     *
-     * Example:
-     * user@gmail.com
-     */
     email: text("email").notNull(),
 
-    /**
-     * Notification channel.
-     *
-     * Currently only email is supported.
-     */
     channel: text("channel")
       .notNull()
       .default("email"),
 
-    /**
-     * Notification type.
-     *
-     * Examples:
-     * welcome
-     * round_complete
-     * test
-     */
     event: text("event").notNull(),
 
-    /**
-     * Email subject.
-     */
     title: text("title").notNull(),
 
-    /**
-     * Email message.
-     */
     body: text("body").notNull(),
 
-    /**
-     * Email delivery status.
-     *
-     * Example:
-     * sent
-     * failed
-     */
     status: text("status")
       .notNull()
       .default("sent"),
 
-    /**
-     * When the notification was created/sent.
-     */
-    createdAt: timestamp("created_at", {
-      withTimezone: true,
-    })
+    createdAt: timestamp(
+      "created_at",
+      {
+        withTimezone: true,
+      },
+    )
       .defaultNow()
       .notNull(),
   },
   (t) => [
-    index("ntf_email_idx").on(t.email),
+    index("ntf_email_idx").on(
+      t.email,
+    ),
   ],
 );

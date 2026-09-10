@@ -1,49 +1,172 @@
 export interface Identity {
-  /** Stable id used for attempts. Registered users use their email address. */
+  /**
+   * Server-controlled user identifier.
+   *
+   * This must never be trusted from localStorage.
+   */
   id: string;
+
+  /**
+   * Display name.
+   */
   name: string;
+
+  /**
+   * Authenticated account email.
+   */
   email: string;
+
+  /**
+   * Whether the current server session
+   * belongs to a real account.
+   */
+  authenticated: boolean;
 }
 
-const KEY = "ia_identity_email_v1";
+const KEY =
+  "ia_identity_profile_v2";
 
-function anonId(): string {
-  return `anon-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+export function cleanEmail(
+  value: string,
+): string {
+  return (
+    value ||
+    ""
+  )
+    .trim()
+    .toLowerCase();
 }
 
-export function cleanEmail(v: string): string {
-  return (v || "").trim().toLowerCase();
+export function isRegisteredEmail(
+  value: string,
+): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+    cleanEmail(value),
+  );
 }
 
-export function isRegisteredEmail(v: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail(v));
-}
+/**
+ * Gets identity from the server.
+ *
+ * localStorage is NOT used for authentication.
+ */
+export async function loadIdentity(): Promise<Identity> {
+  const response =
+    await fetch(
+      "/api/auth/session",
+      {
+        method: "GET",
 
-export function loadIdentity(): Identity {
-  if (typeof window === "undefined") return { id: anonId(), name: "Candidate", email: "" };
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<Identity>;
-      if (parsed && typeof parsed.id === "string") {
-        return { id: parsed.id, name: parsed.name || "Candidate", email: cleanEmail(parsed.email || "") };
-      }
-    }
-  } catch {
-    /* fall through */
+        credentials:
+          "include",
+
+        cache:
+          "no-store",
+      },
+    );
+
+  if (!response.ok) {
+    throw new Error(
+      "Could not establish a secure session.",
+    );
   }
-  const fresh: Identity = { id: anonId(), name: "Candidate", email: "" };
-  try { window.localStorage.setItem(KEY, JSON.stringify(fresh)); } catch { /* storage unavailable */ }
-  return fresh;
+
+  const data =
+    (await response.json()) as {
+      authenticated?: boolean;
+      id?: string;
+      name?: string;
+      email?: string;
+    };
+
+  const identity: Identity = {
+    id:
+      data.id ||
+      "",
+
+    name:
+      data.name ||
+      "Candidate",
+
+    email:
+      cleanEmail(
+        data.email ||
+          "",
+      ),
+
+    authenticated:
+      data.authenticated ===
+      true,
+  };
+
+  /*
+   * Store only display information.
+   *
+   * NEVER store/use this as authentication.
+   */
+  try {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        name:
+          identity.name,
+
+        email:
+          identity.email,
+      }),
+    );
+  } catch {
+    // Ignore storage failures.
+  }
+
+  return identity;
 }
 
-export function saveIdentity(identity: Identity): void {
-  try { window.localStorage.setItem(KEY, JSON.stringify(identity)); } catch { /* storage unavailable */ }
+export function saveIdentity(
+  identity: Identity,
+): void {
+  try {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        name:
+          identity.name,
+
+        email:
+          identity.email,
+      }),
+    );
+  } catch {
+    // Ignore storage failures.
+  }
 }
 
-export function toRegistered(_prev: Identity, name: string, email: string): Identity {
-  const normalized = cleanEmail(email);
-  const next: Identity = { id: normalized, name, email: normalized };
-  saveIdentity(next);
-  return next;
+export function toRegistered(
+  _previous: Identity,
+  name: string,
+  email: string,
+): Identity {
+  const normalizedEmail =
+    cleanEmail(email);
+
+  const identity: Identity = {
+    id:
+      normalizedEmail,
+
+    name:
+      name.trim() ||
+      "Candidate",
+
+    email:
+      normalizedEmail,
+
+    authenticated:
+      true,
+  };
+
+  saveIdentity(
+    identity,
+  );
+
+  return identity;
 }

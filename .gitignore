@@ -9,3 +9,4 @@ out/
 .vercel
 interview_arena_2500_questions.sql
 question_bank_data.sql
+ml-service/models/

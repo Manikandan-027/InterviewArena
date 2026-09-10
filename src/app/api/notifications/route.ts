@@ -1,44 +1,85 @@
 import { NextResponse } from "next/server";
-import { desc, eq } from "drizzle-orm";
+import {
+  desc,
+  eq,
+} from "drizzle-orm";
 
 import { db } from "@/db";
-import { notifications } from "@/db/schema";
-import { cleanEmail, isValidEmail } from "@/server/api-utils";
+import {
+  notifications,
+} from "@/db/schema";
 
-export const dynamic = "force-dynamic";
+import {
+  getSession,
+} from "@/server/auth";
 
-/**
- * Email inbox for a registered email address.
- */
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
+export const dynamic =
+  "force-dynamic";
 
-  const email = cleanEmail(
-    searchParams.get("email") || "",
-  );
+export async function GET() {
+  const session =
+    await getSession();
 
-  if (!isValidEmail(email)) {
+  if (
+    !session ||
+    !session.registration ||
+    !session.registration.passwordHash
+  ) {
     return NextResponse.json(
-      { error: "Invalid email" },
-      { status: 400 },
+      {
+        error:
+          "Please login to view your emails.",
+      },
+      { status: 401 },
     );
   }
 
-  const rows = await db
-    .select()
-    .from(notifications)
-    .where(eq(notifications.email, email))
-    .orderBy(desc(notifications.createdAt))
-    .limit(30);
+  /*
+   * Recipient is determined by
+   * the authenticated account.
+   */
+  const email =
+    session.registration.email;
+
+  const rows =
+    await db
+      .select()
+      .from(notifications)
+      .where(
+        eq(
+          notifications.email,
+          email,
+        ),
+      )
+      .orderBy(
+        desc(
+          notifications.createdAt,
+        ),
+      )
+      .limit(30);
 
   return NextResponse.json({
-    items: rows.map((r) => ({
-      id: r.id,
-      event: r.event,
-      title: r.title,
-      body: r.body,
-      status: r.status,
-      createdAt: r.createdAt.toISOString(),
-    })),
+    items:
+      rows.map(
+        (row) => ({
+          id:
+            row.id,
+
+          event:
+            row.event,
+
+          title:
+            row.title,
+
+          body:
+            row.body,
+
+          status:
+            row.status,
+
+          createdAt:
+            row.createdAt.toISOString(),
+        }),
+      ),
   });
 }

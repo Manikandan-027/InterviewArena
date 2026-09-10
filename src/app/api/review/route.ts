@@ -1,34 +1,89 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+} from "drizzle-orm";
+
 import { db } from "@/db";
 import { answers } from "@/db/schema";
 
-export const dynamic = "force-dynamic";
+import {
+  getSession,
+} from "@/server/auth";
 
-/** The Missed notebook — recent wrong answers with the correct one attached. */
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const userId = searchParams.get("userId") || "";
-  if (!userId || userId.length > 64) {
-    return NextResponse.json({ error: "userId is required" }, { status: 400 });
+export const dynamic =
+  "force-dynamic";
+
+export async function GET() {
+  const session =
+    await getSession();
+
+  if (
+    !session ||
+    !session.registration ||
+    !session.registration.passwordHash
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "Please login to view your review history.",
+      },
+      { status: 401 },
+    );
   }
 
-  const rows = await db
-    .select()
-    .from(answers)
-    .where(and(eq(answers.userId, userId), eq(answers.isCorrect, false)))
-    .orderBy(desc(answers.createdAt))
-    .limit(12);
+  const rows =
+    await db
+      .select()
+      .from(answers)
+      .where(
+        and(
+          eq(
+            answers.userId,
+            session.userId,
+          ),
+
+          eq(
+            answers.isCorrect,
+            false,
+          ),
+        ),
+      )
+      .orderBy(
+        desc(
+          answers.createdAt,
+        ),
+      )
+      .limit(12);
 
   return NextResponse.json({
-    missed: rows.map((r) => ({
-      id: r.id,
-      category: r.category,
-      question: r.question,
-      options: JSON.parse(r.options) as string[],
-      correctIndex: r.correctIndex,
-      userAnswer: r.userAnswer,
-      createdAt: r.createdAt.toISOString(),
-    })),
+    missed:
+      rows.map(
+        (row) => ({
+          id:
+            row.id,
+
+          category:
+            row.category,
+
+          question:
+            row.question,
+
+          options:
+            JSON.parse(
+              row.options,
+            ) as string[],
+
+          correctIndex:
+            row.correctIndex,
+
+          userAnswer:
+            row.userAnswer,
+
+          createdAt:
+            row.createdAt.toISOString(),
+        }),
+      ),
   });
 }

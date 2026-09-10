@@ -1,69 +1,94 @@
 import { NextResponse } from "next/server";
 
 import {
-  cleanEmail,
-  isValidEmail,
   sendEmail,
 } from "@/server/api-utils";
 
-export const dynamic = "force-dynamic";
+import {
+  getSession,
+} from "@/server/auth";
 
-/**
- * Sends a real SMTP test email.
- */
-export async function POST(req: Request) {
+export const dynamic =
+  "force-dynamic";
+
+export async function POST() {
   try {
-    let body: { email?: string };
+    const session =
+      await getSession();
 
-    try {
-      body = await req.json();
-    } catch {
+    if (
+      !session ||
+      !session.registration ||
+      !session.registration.passwordHash
+    ) {
       return NextResponse.json(
         {
           ok: false,
-          error: "Invalid JSON body.",
+          error:
+            "Please login before sending a test email.",
         },
-        { status: 400 },
+        { status: 401 },
       );
     }
 
-    const email = cleanEmail(body.email || "");
-
-    if (!isValidEmail(email)) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "Please provide a valid email address.",
-        },
-        { status: 400 },
-      );
-    }
+    /*
+     * IMPORTANT:
+     *
+     * We DO NOT accept an email from
+     * the request body.
+     *
+     * The server gets it from the
+     * authenticated account.
+     */
+    const email =
+      session.registration.email;
 
     await sendEmail(
       email,
+
       "test",
+
       "InterviewArena — Test Email",
-      "This is a test email from InterviewArena. Your SMTP email notification system is working correctly.",
+
+      [
+        "Hello!",
+
+        "",
+
+        "This is a test email from InterviewArena.",
+
+        "",
+
+        "Your SMTP email notification system is working correctly.",
+
+        "",
+
+        "— InterviewArena",
+      ].join("\n"),
     );
 
     return NextResponse.json({
       ok: true,
-      message: `Test email sent successfully to ${email}.`,
+
+      message:
+        `Test email sent successfully to ${email}.`,
     });
   } catch (error) {
-    console.error("TEST EMAIL ERROR:", error);
-
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Unknown error while sending test email.";
+    console.error(
+      "TEST EMAIL ERROR:",
+      error,
+    );
 
     return NextResponse.json(
       {
         ok: false,
-        error: message,
+
+        error:
+          error instanceof Error
+            ? error.message
+            : "Could not send the test email.",
       },
-      { status: 500 },
+      { status: 502 },
     );
   }
 }

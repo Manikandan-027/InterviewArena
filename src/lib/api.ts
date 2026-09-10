@@ -6,65 +6,261 @@ import type {
   SubmitResponse,
 } from "./types";
 
-async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) {
-    let msg = `Request failed (${res.status})`;
+async function http<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const response =
+    await fetch(
+      path,
+      {
+        ...init,
+
+        credentials:
+          "include",
+
+        headers: {
+          "Content-Type":
+            "application/json",
+
+          ...(init?.headers || {}),
+        },
+
+        cache:
+          init?.cache ??
+          "no-store",
+      },
+    );
+
+  if (!response.ok) {
+    let message =
+      `Request failed (${response.status})`;
+
     try {
-      const j = (await res.json()) as { error?: string };
-      if (j?.error) msg = j.error;
+      const json =
+        (await response.json()) as {
+          error?: string;
+        };
+
+      if (json?.error) {
+        message =
+          json.error;
+      }
     } catch {
-      /* keep default */
+      // Keep default.
     }
-    throw new Error(msg);
+
+    throw new Error(
+      message,
+    );
   }
-  return (await res.json()) as T;
+
+  return (await response.json()) as T;
 }
 
 export interface SubmitPayload {
-  userId: string;
+  /*
+   * These fields are kept optional for compatibility
+   * with the existing Practice component.
+   *
+   * THE SERVER DOES NOT TRUST THEM.
+   */
+  userId?: string;
+
+  email?: string;
+
   category: string;
+
   durationMs: number;
-  email: string;
-  results: { questionId: number; answer: number; timeTakenMs: number }[];
+
+  results: {
+    questionId: number;
+    answer: number;
+    timeTakenMs: number;
+  }[];
 }
 
 export const api = {
-  fetchRound: (category: string) =>
-    http<RoundResponse>(`/api/questions?category=${encodeURIComponent(category)}`),
+  /* =======================================================
+     QUESTIONS
+     ======================================================= */
 
-  submitRound: (p: SubmitPayload) =>
-    http<SubmitResponse>("/api/submit", {
-      method: "POST",
-      body: JSON.stringify(p),
-    }),
+  fetchRound: (
+    category: string,
+  ) =>
+    http<RoundResponse>(
+      `/api/questions?category=${encodeURIComponent(
+        category,
+      )}`,
+    ),
 
-  register: (name: string, email: string) =>
-    http<{ ok: boolean; email: string; name: string }>("/api/register", {
-      method: "POST",
-      body: JSON.stringify({ name, email }),
-    }),
+  /* =======================================================
+     SUBMIT
+     ======================================================= */
 
-  stats: (userId: string) =>
-    http<Stats>(`/api/stats?userId=${encodeURIComponent(userId)}`),
+  submitRound: (
+    payload: SubmitPayload,
+  ) =>
+    http<SubmitResponse>(
+      "/api/submit",
+      {
+        method: "POST",
 
-  review: (userId: string) =>
-    http<{ missed: NotebookItem[] }>(`/api/review?userId=${encodeURIComponent(userId)}`),
+        body:
+          JSON.stringify(
+            payload,
+          ),
+      },
+    ),
 
-  notifications: (email: string) =>
-    http<{ items: EmailItem[] }>(`/api/notifications?email=${encodeURIComponent(email)}`),
+  /* =======================================================
+     AUTHENTICATION
+     ======================================================= */
 
-  sendTestEmail: (email: string) =>
-  http<{
-    ok: boolean;
-    message?: string;
-  }>("/api/notifications/send", {
-    method: "POST",
-    body: JSON.stringify({
-      email,
-    }),
-  }),
+  session:
+    () =>
+      http<{
+        authenticated: boolean;
+        id: string;
+        name: string;
+        email: string;
+      }>(
+        "/api/auth/session",
+      ),
+
+  captcha:
+    () =>
+      http<{
+        token: string;
+        question: string;
+      }>(
+        "/api/auth/captcha",
+      ),
+
+  login:
+    (
+      email: string,
+      password: string,
+      captchaToken: string,
+      captchaAnswer: string,
+    ) =>
+      http<{
+        ok: boolean;
+        authenticated: boolean;
+        id: string;
+        name: string;
+        email: string;
+        message: string;
+      }>(
+        "/api/auth/login",
+        {
+          method: "POST",
+
+          body:
+            JSON.stringify({
+              email,
+              password,
+              captchaToken,
+              captchaAnswer,
+            }),
+        },
+      ),
+
+  register:
+    (
+      name: string,
+      email: string,
+      password: string,
+      captchaToken: string,
+      captchaAnswer: string,
+    ) =>
+      http<{
+        ok: boolean;
+        registered: boolean;
+        authenticated: boolean;
+        id: string;
+        name: string;
+        email: string;
+        message: string;
+      }>(
+        "/api/register",
+        {
+          method: "POST",
+
+          body:
+            JSON.stringify({
+              name,
+              email,
+              password,
+              captchaToken,
+              captchaAnswer,
+            }),
+        },
+      ),
+
+  logout:
+    () =>
+      http<{
+        ok: boolean;
+        authenticated: boolean;
+      }>(
+        "/api/auth/logout",
+        {
+          method: "POST",
+        },
+      ),
+
+  /* =======================================================
+     STATS
+     ======================================================= */
+
+  /*
+   * userId is accepted for compatibility with
+   * your current page.tsx.
+   *
+   * It is NOT placed into the URL.
+   *
+   * The backend uses the secure session.
+   */
+  stats:
+    (_userId?: string) =>
+      http<Stats>(
+        "/api/stats",
+      ),
+
+  /* =======================================================
+     REVIEW
+     ======================================================= */
+
+  review:
+    (_userId?: string) =>
+      http<{
+        missed: NotebookItem[];
+      }>(
+        "/api/review",
+      ),
+
+  /* =======================================================
+     EMAIL
+     ======================================================= */
+
+  notifications:
+    (_email?: string) =>
+      http<{
+        items: EmailItem[];
+      }>(
+        "/api/notifications",
+      ),
+
+  sendTestEmail:
+    (_email?: string) =>
+      http<{
+        ok: boolean;
+        message?: string;
+      }>(
+        "/api/notifications/send",
+        {
+          method: "POST",
+        },
+      ),
 };
